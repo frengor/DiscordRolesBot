@@ -1,15 +1,20 @@
+#![allow(non_snake_case)]
+
 use std::env;
 
 use serenity::async_trait;
+use serenity::builder::{CreateButton, CreateInteractionResponseData};
 use serenity::model::gateway::Ready;
-use serenity::model::id::GuildId;
-use serenity::model::interactions::application_command::{
-    ApplicationCommand,
-    ApplicationCommandInteractionDataOptionValue,
-    ApplicationCommandOptionType,
-};
+use serenity::model::id::RoleId;
 use serenity::model::interactions::{Interaction, InteractionResponseType};
+use serenity::model::interactions::application_command::{ApplicationCommand, ApplicationCommandInteraction, ApplicationCommandInteractionDataOptionValue, ApplicationCommandOptionType};
+use serenity::model::interactions::message_component::ButtonStyle;
+use serenity::model::prelude::application_command::ApplicationCommandInteractionDataOption;
+use serenity::model::prelude::InteractionType;
+use serenity::model::prelude::message_component::{ComponentType, MessageComponentInteraction};
 use serenity::prelude::*;
+
+const MAX_BUTTONS_PER_ACTION_ROW: usize = 5;
 
 struct Handler;
 
@@ -18,164 +23,167 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
 
-        let guild_id = GuildId(
-            env::var("GUILD_ID")
-            .expect("Expected GUILD_ID in environment")
-            .parse()
-            .expect("GUILD_ID must be an integer"),
-        );
-
-        let commands = GuildId::set_application_commands(&guild_id, &ctx.http, |commands| {
-            commands
-            .create_application_command(|command| {
-                command.name("ping").description("A ping command")
-            })
-            .create_application_command(|command| {
-                command.name("id").description("Get a user id").create_option(|option| {
-                    option
-                    .name("id")
-                    .description("The user to lookup")
-                    .kind(ApplicationCommandOptionType::User)
-                    .required(true)
-                })
-            })
-            .create_application_command(|command| {
-                command
-                .name("welcome")
-                .description("Welcome a user")
-                .create_option(|option| {
-                    option
-                    .name("user")
-                    .description("The user to welcome")
-                    .kind(ApplicationCommandOptionType::User)
-                    .required(true)
-                })
-                .create_option(|option| {
-                    option
-                    .name("message")
-                    .description("The message to send")
-                    .kind(ApplicationCommandOptionType::String)
-                    .required(true)
-                    .add_string_choice(
-                        "Welcome to our cool server! Ask me if you need help",
-                        "pizza",
-                    )
-                    .add_string_choice("Hey, do you want a coffee?", "coffee")
-                    .add_string_choice(
-                        "Welcome to the club, you're now a good person. Well, I hope.",
-                        "club",
-                    )
-                    .add_string_choice(
-                        "I hope that you brought a controller to play together!",
-                        "game",
-                    )
-                })
-            })
-            .create_application_command(|command| {
-                command
-                .name("numberinput")
-                .description("Test command for number input")
-                .create_option(|option| {
-                    option
-                    .name("int")
-                    .description("An integer from 5 to 10")
-                    .kind(ApplicationCommandOptionType::Integer)
-                    .min_int_value(5)
-                    .max_int_value(10)
-                    .required(true)
-                })
-                .create_option(|option| {
-                    option
-                    .name("number")
-                    .description("A float from -3.3 to 234.5")
-                    .kind(ApplicationCommandOptionType::Number)
-                    .min_number_value(-3.3)
-                    .max_number_value(234.5)
-                    .required(true)
-                })
-            })
-            .create_application_command(|command| {
-                command
-                .name("attachmentinput")
-                .description("Test command for attachment input")
-                .create_option(|option| {
-                    option
-                    .name("attachment")
-                    .description("A file")
-                    .kind(ApplicationCommandOptionType::Attachment)
-                    .required(true)
-                })
-            })
-        })
-        .await;
-
-        println!("I now have the following guild slash commands: {:#?}", commands);
-
-        let guild_command =
-        ApplicationCommand::create_global_application_command(&ctx.http, |command| {
-            command.name("wonderful_command").description("An amazing command")
-        })
-        .await;
-
-        println!("I created the following global slash command: {:#?}", guild_command);
+        if let Err(err) = ApplicationCommand::create_global_application_command(&ctx.http, |command| {
+            command.name("create").description("Create a new role-giver button");
+            command.create_option(|option| {
+                option.name("message").description("The message that will be displayed above buttons")
+                .kind(ApplicationCommandOptionType::String).required(true)
+            });
+            command.create_option(|option| {
+                option.name("role1").description("Role").kind(ApplicationCommandOptionType::Role).required(true)
+            });
+            for i in 2..=10 {
+                command.create_option(|option| {
+                    option.name(format!("role{}", i)).description("Role").kind(ApplicationCommandOptionType::Role)
+                });
+            }
+            command
+        }).await {
+            eprintln!("Error sending commands: {err}");
+        } else {
+            println!("Commands has been send successfully.");
+        }
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        if let Interaction::ApplicationCommand(command) = interaction {
-            let content = match command.data.name.as_str() {
-                "ping" => "Hey, I'm alive!".to_string(),
-                "id" => {
-                    let options = command
-                    .data
-                    .options
-                    .get(0)
-                    .expect("Expected user option")
-                    .resolved
-                    .as_ref()
-                    .expect("Expected user object");
+        match interaction {
+            Interaction::ApplicationCommand(command) => {
 
-                    if let ApplicationCommandInteractionDataOptionValue::User(user, _member) =
-                    options
-                    {
-                        format!("{}'s id is {}", user.tag(), user.id)
-                    } else {
-                        "Please provide a valid user".to_string()
+                // Help functions
+                async fn response<F>(ctx: &Context, command: &ApplicationCommandInteraction, f: F)
+                    where for<'b, 'c> F: FnOnce(&'b mut CreateInteractionResponseData<'c>) -> &'b mut CreateInteractionResponseData<'c>
+                {
+                    if let Err(err) = command.create_interaction_response(&ctx.http, |response| {
+                        response.kind(InteractionResponseType::ChannelMessageWithSource)
+                        .interaction_response_data(f)
+                    }).await {
+                        eprintln!("Couldn't send command response: {}", err);
                     }
-                },
-                "attachmentinput" => {
-                    let options = command
-                    .data
-                    .options
-                    .get(0)
-                    .expect("Expected attachment option")
-                    .resolved
-                    .as_ref()
-                    .expect("Expected attachment object");
+                }
 
-                    if let ApplicationCommandInteractionDataOptionValue::Attachment(attachment) =
-                    options
-                    {
-                        format!(
-                            "Attachment name: {}, attachment size: {}",
-                            attachment.filename, attachment.size
-                        )
-                    } else {
-                        "Please provide a valid attachment".to_string()
-                    }
-                },
-                _ => "not implemented :(".to_string(),
-            };
+                async fn error(msg: impl ToString, ctx: &Context, command: &ApplicationCommandInteraction) {
+                    response(ctx, command, |message| message.content(format!("Error: {}", msg.to_string()))).await
+                }
 
-            if let Err(why) = command
-            .create_interaction_response(&ctx.http, |response| {
-                response
-                .kind(InteractionResponseType::ChannelMessageWithSource)
-                .interaction_response_data(|message| message.content(content))
-            })
-            .await
-            {
-                println!("Cannot respond to slash command: {}", why);
+                match command.data.name.as_str() {
+                    "create" => {
+                        // Validate inputs
+                        let options = &command.data.options;
+
+                        if command.data.options.len() == 0 {
+                            error("No role has been provided", &ctx, &command).await;
+                            return;
+                        }
+                        if command.data.options.len() > 10 {
+                            error("Too many roles", &ctx, &command).await;
+                            return;
+                        }
+
+                        let mut iter = options.iter();
+
+                        let resp_message = match iter.next() {
+                            Some(ApplicationCommandInteractionDataOption { resolved: Some(ApplicationCommandInteractionDataOptionValue::String(message)), .. }) => {
+                                // The first parameter must be the message
+                                message
+                            },
+                            Some(_) => {
+                                error("Message is not a string", &ctx, &command).await;
+                                return;
+                            },
+                            None => {
+                                error("Message parameter missing", &ctx, &command).await;
+                                return;
+                            },
+                        };
+
+                        let mut roles = Vec::with_capacity(10);
+                        for option in iter {
+                            if let Some(ApplicationCommandInteractionDataOptionValue::Role(role)) = &option.resolved {
+                                roles.push(role);
+                            } else {
+                                error(format!("{} is not a role", option.name), &ctx, &command).await;
+                                return;
+                            }
+                        }
+
+                        let mut roles = roles.iter().peekable();
+
+                        // Send buttons
+                        response(&ctx, &command, |message| {
+                            message.content(resp_message)
+                            .components(|comp| {
+                                while let Some(_) = roles.peek() {
+                                    comp.create_action_row(|action_row| {
+                                        for _ in 0..MAX_BUTTONS_PER_ACTION_ROW {
+                                            match roles.next() {
+                                                Some(role) => {
+                                                    let mut button = CreateButton::default();
+                                                    button.style(ButtonStyle::Success);
+                                                    button.custom_id(role.id);
+                                                    button.label(role.name.clone());
+                                                    action_row.add_button(button);
+                                                },
+                                                None => break,
+                                            };
+                                        }
+                                        action_row
+                                    });
+                                }
+                                comp
+                            })
+                        }).await;
+                    },
+                    _ => { error("Invalid command", &ctx, &command).await; },
+                };
             }
+            Interaction::MessageComponent(message) => {
+                if message.kind != InteractionType::MessageComponent || message.data.component_type != ComponentType::Button {
+                    response("Error: Invalid", &ctx, &message).await;
+                    return;
+                }
+
+                async fn response(msg: &str, ctx: &Context, message: &MessageComponentInteraction) {
+                    if let Err(err) = message.create_interaction_response(&ctx.http, |response| {
+                        response.kind(InteractionResponseType::ChannelMessageWithSource).interaction_response_data(|message| message.ephemeral(true).content(msg))
+                    }).await {
+                        eprintln!("Couldn't send command response: {}", err);
+                    }
+
+                }
+
+                let role_id: u64 = match message.data.custom_id.parse() {
+                    Ok(role_id) => role_id,
+                    Err(_) => {
+                        response("Error: Invalid role", &ctx, &message).await;
+                        return;
+                    },
+                };
+
+                if let Some(member) = &message.member {
+                    if member.roles.contains(&RoleId(role_id)) {
+                        match ctx.http.remove_member_role(member.guild_id.0, member.user.id.0, role_id, Some("Role Buttons")).await {
+                            Ok(_) => {
+                                response("Successfully removed role!", &ctx, &message).await;
+                            },
+                            Err(_) => {
+                                response("Error: Couldn't remove role!", &ctx, &message).await;
+                            },
+                        }
+                    } else {
+                        match ctx.http.add_member_role(member.guild_id.0, member.user.id.0, role_id, Some("Role Buttons")).await {
+                            Ok(_) => {
+                                response("Successfully added role!", &ctx, &message).await;
+                            },
+                            Err(_) => {
+                                response("Error: Couldn't add role!", &ctx, &message).await;
+                            },
+                        }
+                    }
+                } else {
+                    response("Error: Invalid", &ctx, &message).await;
+                }
+            },
+            _ => {},
         }
     }
 }
