@@ -9,6 +9,7 @@ use serenity::model::id::RoleId;
 use serenity::model::interactions::{Interaction, InteractionResponseType};
 use serenity::model::interactions::application_command::{ApplicationCommand, ApplicationCommandInteraction, ApplicationCommandInteractionDataOptionValue, ApplicationCommandOptionType};
 use serenity::model::interactions::message_component::ButtonStyle;
+use serenity::model::Permissions;
 use serenity::model::prelude::application_command::ApplicationCommandInteractionDataOption;
 use serenity::model::prelude::InteractionType;
 use serenity::model::prelude::message_component::{ComponentType, MessageComponentInteraction};
@@ -25,6 +26,7 @@ impl EventHandler for Handler {
 
         if let Err(err) = ApplicationCommand::create_global_application_command(&ctx.http, |command| {
             command.name("create").description("Create a new role-giver button");
+            command.dm_permission(false).default_member_permissions(Permissions::MANAGE_ROLES);
             command.create_option(|option| {
                 option.name("message").description("The message that will be displayed above buttons")
                 .kind(ApplicationCommandOptionType::String).required(true)
